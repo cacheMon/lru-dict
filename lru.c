@@ -1,4 +1,5 @@
 #include <Python.h>
+#include <stdbool.h>
 
 /*
  * This is a simple implementation of LRU Dict that uses a Python dict and an associated doubly linked
@@ -60,6 +61,7 @@ typedef struct _Node {
     PyObject * key;
     struct _Node * prev;
     struct _Node * next;
+    bool visited;
 } Node;
 
 static void
@@ -124,6 +126,7 @@ typedef struct {
     PyObject * dict;
     Node * first;
     Node * last;
+    Node * hand;
     Py_ssize_t size;
     Py_ssize_t hits;
     Py_ssize_t misses;
@@ -163,6 +166,10 @@ lru_remove_node(LRU *self, Node* node)
     if (self->last == node) {
         self->last = node->prev;
     }
+    if (self->hand == node) {
+        self->hand = self->hand->prev;
+    }
+
     if (node->prev) {
         node->prev->next = node->next;
     }
@@ -197,6 +204,45 @@ lru_delete_last(LRU *self)
 
     if (!self->last)
         return;
+
+    if (self->callback) {
+        
+        arglist = Py_BuildValue("OO", n->key, n->value);
+        result = PyObject_CallObject(self->callback, arglist);
+        Py_XDECREF(result);
+        Py_DECREF(arglist);
+    }
+
+    lru_remove_node(self, n);
+    PUT_NODE(self->dict, n->key, NULL);
+}
+
+static void
+lru_evict(LRU *self)
+{
+    PyObject *arglist;
+    PyObject *result;
+    Node* n = self->hand;
+
+    if (n == NULL) {
+        n = self->last;
+    }
+
+    if (!self->last)
+        return;
+
+    while (n != self->first && n->visited) {
+        n->visited = false;
+        n = n->prev;
+    }
+    if (n == NULL) {
+        n = self->last;
+    }
+    while (n != self->first && n->visited) {
+        n->visited = false;
+        n = n->prev;
+    }
+
 
     if (self->callback) {
         
@@ -253,10 +299,12 @@ lru_subscript(LRU *self, register PyObject *key)
     assert(PyObject_TypeCheck(node, &NodeType));
 
     /* We don't need to move the node when it's already self->first. */
-    if (node != self->first) {
-        lru_remove_node(self, node);
-        lru_add_node_at_head(self, node);
-    }
+    // if (node != self->first) {
+    //     lru_remove_node(self, node);
+    //     lru_add_node_at_head(self, node);
+    // }
+
+    node->visited = true;
 
     self->hits++;
     Py_INCREF(node->value);
@@ -300,8 +348,9 @@ lru_ass_sub(LRU *self, PyObject *key, PyObject *value)
             Py_DECREF(node->value);
             node->value = value;
 
-            lru_remove_node(self, node);
-            lru_add_node_at_head(self, node);
+            // lru_remove_node(self, node);
+            // lru_add_node_at_head(self, node);
+            node->visited = true;
 
             res = 0;
         } else {
@@ -309,6 +358,7 @@ lru_ass_sub(LRU *self, PyObject *key, PyObject *value)
             node->key = key;
             node->value = value;
             node->next = node->prev = NULL;
+            node->visited = false;
 
             Py_INCREF(key);
             Py_INCREF(value);
@@ -316,7 +366,8 @@ lru_ass_sub(LRU *self, PyObject *key, PyObject *value)
             res = PUT_NODE(self->dict, key, node);
             if (res == 0) {
                 if (lru_length(self) > self->size) {
-                    lru_delete_last(self);
+                    // lru_delete_last(self);
+                    lru_evict(self);
                 }
 
                 lru_add_node_at_head(self, node);
